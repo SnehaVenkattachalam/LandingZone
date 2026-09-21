@@ -55,8 +55,8 @@ nsg_outbound_rules = [
 
 # Resource tags
 tags = {
-  cost_center  = "IT-LZ"
-  owner        = "platform-team"
-  criticality  = "low"
+  cost_center   = "IT-LZ"
+  owner         = "platform-team"
+  criticality   = "low"
   auto_shutdown = "enabled"
 }

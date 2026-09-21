@@ -1,0 +1,119 @@
+###############################################################################
+# Terraform Destroy — Landing Zone
+#
+# Triggered ONLY manually via workflow_dispatch to prevent accidental runs.
+# Requires typing "destroy" as confirmation before proceeding.
+#
+# Downloads the terraform.tfstate artifact uploaded by the apply workflow
+# so Terraform knows exactly which resources to destroy.
+#
+# Required GitHub repository secrets:
+#   ARM_CLIENT_ID
+#   ARM_CLIENT_SECRET
+#   ARM_TENANT_ID
+#   ARM_SUBSCRIPTION_ID
+###############################################################################
+
+name: Terraform Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tfvars:
+        description: "Variable file to use (must match what was used during apply)"
+        required: true
+        default: dev.tfvars
+        type: choice
+        options:
+          - dev.tfvars
+          - prod.tfvars
+      confirm:
+        description: "Type 'destroy' to confirm you want to destroy all resources"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read  # Required to download artifacts from other workflow runs
+
+env:
+  TF_VERSION: "1.9.0"
+  TF_VAR_FILE: ${{ github.event.inputs.tfvars }}
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    # Safety gate — job won't run unless the user typed exactly "destroy"
+    if: github.event.inputs.confirm == 'destroy'
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      # Download the state file saved by the apply workflow
+      - name: Download Terraform State
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-state
+          # Downloads into the working directory so Terraform finds it automatically
+
+      - name: Verify State File Exists
+        run: |
+          if [ ! -f terraform.tfstate ]; then
+            echo "ERROR: terraform.tfstate not found. Has apply been run successfully?"
+            exit 1
+          fi
+          echo "State file found. Resources tracked:"
+          cat terraform.tfstate | python3 -c "
+          import json, sys
+          state = json.load(sys.stdin)
+          resources = state.get('resources', [])
+          print(f'  Total resources in state: {len(resources)}')
+          for r in resources:
+              print(f'  - {r[\"type\"]}.{r[\"name\"]}')
+          "
+
+      - name: Terraform Destroy
+        run: terraform destroy -var-file="${{ env.TF_VAR_FILE }}" -input=false -auto-approve
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      # Remove the state artifact after successful destroy — nothing left to track
+      - name: Delete State Artifact
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'terraform-state'
+            });
+            for (const artifact of artifacts.data.artifacts) {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id
+              });
+              console.log(`Deleted artifact: ${artifact.name} (id: ${artifact.id})`);
+            }
