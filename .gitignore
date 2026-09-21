@@ -1,0 +1,19 @@
+# Local environment credentials - NEVER commit these
+.env
+
+# Terraform state files - contain sensitive data
+terraform.tfstate
+terraform.tfstate.backup
+
+# Terraform working directory (downloaded providers — do NOT commit)
+.terraform/
+
+# Lock file should be committed — it pins provider version hashes
+# .terraform.lock.hcl   <-- intentionally NOT excluded
+
+# Variable files that may contain secrets
+*.auto.tfvars
+
+# OS artefacts
+.DS_Store
+Thumbs.db
