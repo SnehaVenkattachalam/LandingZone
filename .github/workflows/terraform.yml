@@ -1,0 +1,130 @@
+###############################################################################
+# Terraform CI/CD — Landing Zone (Use Case 1)
+#
+# Triggers:
+#   - pull_request  → fmt + validate + plan  (preview only)
+#   - push to main  → fmt + validate + plan + apply
+#   - workflow_dispatch → manual run (plan, or plan+apply)
+#
+# Required GitHub repository secrets:
+#   ARM_CLIENT_ID
+#   ARM_CLIENT_SECRET
+#   ARM_TENANT_ID
+#   ARM_SUBSCRIPTION_ID
+#
+# State file: After a successful apply, terraform.tfstate is uploaded as a
+# GitHub Actions artifact named "terraform-state". The destroy workflow
+# downloads this artifact to perform a clean destroy.
+# NOTE: Migrate to a remote backend (Azure Storage) for production use.
+###############################################################################
+
+name: Terraform Landing Zone
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Choose Terraform action"
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+      tfvars:
+        description: "Variable file to use"
+        required: true
+        default: dev.tfvars
+        type: choice
+        options:
+          - dev.tfvars
+          - prod.tfvars
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.9.0"
+  # Default var-file for push / pull_request; workflow_dispatch can override
+  TF_VAR_FILE: ${{ github.event.inputs.tfvars || 'dev.tfvars' }}
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: Terraform Plan
+        id: plan
+        if: >
+          github.event_name == 'pull_request' ||
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' &&
+           (github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'))
+        run: terraform plan -var-file="${{ env.TF_VAR_FILE }}" -input=false -no-color -out=tfplan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: Terraform Apply
+        id: apply
+        if: >
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+        run: terraform apply -input=false -auto-approve tfplan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      # Upload state after a successful apply so the destroy workflow can use it
+      - name: Upload Terraform State
+        if: steps.apply.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-state
+          path: terraform.tfstate
+          # Keep the state artifact for 90 days
+          retention-days: 90
