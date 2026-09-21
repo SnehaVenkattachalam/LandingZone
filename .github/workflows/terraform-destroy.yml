@@ -34,7 +34,7 @@ on:
 
 permissions:
   contents: read
-  actions: read  # Required to download artifacts from other workflow runs
+  actions: write  # Required to download and delete artifacts
 
 env:
   TF_VERSION: "1.9.0"
@@ -67,12 +67,44 @@ jobs:
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
-      # Download the state file saved by the apply workflow
+      # Find and download the terraform-state artifact from the latest apply run
       - name: Download Terraform State
-        uses: actions/download-artifact@v4
+        uses: actions/github-script@v7
         with:
-          name: terraform-state
-          # Downloads into the working directory so Terraform finds it automatically
+          script: |
+            const fs = require('fs');
+
+            // List all artifacts in the repo named "terraform-state"
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'terraform-state'
+            });
+
+            if (artifacts.data.total_count === 0) {
+              core.setFailed('No terraform-state artifact found. Has apply been run successfully?');
+              return;
+            }
+
+            // Pick the most recent one
+            const artifact = artifacts.data.artifacts[0];
+            console.log(`Found artifact: ${artifact.name} (id: ${artifact.id}, created: ${artifact.created_at})`);
+
+            // Download it
+            const download = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: artifact.id,
+              archive_format: 'zip'
+            });
+
+            // Save and extract
+            fs.writeFileSync('terraform-state.zip', Buffer.from(download.data));
+
+      - name: Extract State File
+        run: |
+          unzip -o terraform-state.zip
+          ls -la terraform.tfstate
 
       - name: Verify State File Exists
         run: |
